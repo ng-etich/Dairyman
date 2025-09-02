@@ -27,6 +27,21 @@ body {
   margin: 0 auto;
   padding: 0 20px;
 }
+.alert{
+  background-color: #bd8d8d;
+  color: red;
+  padding: 10px;
+  border-radius: 5px;
+  margin-bottom: 15px;
+  text-align: center;
+  position: fixed;
+  top: 80px;
+  right: 20px;
+  z-index: 1001;
+  max-width: 300px;
+  display: flex;
+  align-items: start;
+}
 
 section {
   padding: 80px 0;
