@@ -11,10 +11,44 @@ const dbconn =mysql.createConnection({
 });
 const bcrypt = require("bcrypt");
 const salt = bcrypt.genSaltSync(13);
+const session = require("express-session")
+const sqlQuery = require("./sqlstatement.js");
+const utils = require("./utils.js");
+
+dbconn.query(
+  "SELECT * FROM Farmers where email = ?",
+  ["john@example.com"],
+  (err, results) => {
+    console.log(results.length);
+    
+  }
+);
 //middleware
 app.use(express.static(path.join(__dirname, 'public')));//static files will be served from 'public' folder
 app.use(express.urlencoded({ extended: true }));//to parse form data
-
+app.use(
+  session({
+    secret:"keyboardcat",
+    resave: false,
+    saveUninitialized: true,
+  })
+);
+//authorization middleware
+const protectedRoutes = ["/dashboard","/expenses"]
+app.use((req,res,next)=>{
+  if(protectedRoutes.includes(req.path)){
+    //check if user is logged in
+    
+    if(req.session && req.session.farmer){
+      res.locals.farmer = req.session.farmer;
+      next()
+    }else{
+      res.redirect("/login?message=unauthorized")
+    }
+  }else{
+    next()
+  }
+});
 // dbconn.query("select * from Farmers", (err, results) => {
 //   console.log(err);
   
@@ -39,7 +73,10 @@ app.get('/login', (req, res) => {
     res.locals.message ="Registration successful.please login";
   }else if(message === "invalid") {
     res.locals.message ="Invalid email or password .please try again";
+  }else if(message=="unauthorized"){
+    res.locals.message ="You are unauthorized to access this page"
   }
+  res.sender
 
   res.render('login.ejs');
 });
@@ -85,7 +122,7 @@ app.post("/login", (req, res) => {
   const { email, password } = req.body;
 
   // FIXED: removed extra comma + use placeholders
-  const checkEmailStatement = `SELECT email, fullname, password FROM Farmers WHERE email = ?`;
+  const checkEmailStatement = `SELECT farmer_id,email, fullname, password FROM Farmers WHERE email = ?`;
 
   dbconn.query(checkEmailStatement, [email], (sqlErr, data) => {
     if (sqlErr) {
@@ -101,7 +138,9 @@ app.post("/login", (req, res) => {
 
       const passwordMatch = bcrypt.compareSync(password, user.password); // bcrypt compare
       if (passwordMatch) {
+
         // create a session and redirect to dashboard
+        req.session.farmer = user;//setting session for a farmer
         res.redirect("/dashboard");
       } else {
         res.redirect("/login?message=invalid");
@@ -109,19 +148,39 @@ app.post("/login", (req, res) => {
     }
   });
 });
+// console.log(bcrypt.hashSync("john123", salt));
+
+app.get("/dashboard", (req, res) =>{
+  dbconn.query(
+    sqlQuery.getProductionRecordsForFarmer(req.session.farmer.farmer_id),
+    (sqlErr, data) => {
+      if(sqlErr) return res.status(500).send("Server error!");
+      const GroupedData = utils.groupAndExtractLatest(data);
+      res.render("dashboard.ejs", {GroupedData} );
 
 
-
-
-
-
-
-
-
-app.get("/dashboard", (req, res) => {
-  res.send('dashboard.ejs');   
+      
+    }
+  );
+  
+  
 });
 
-app.listen(3000, () => {
-  console.log('Server is running on port 3000');
+app.get("/logout",(req,res) =>{
+  req.session.destroy();
+  res.redirect("/login");
 });
+
+app.listen(3000, () =>{
+  console.log("server is running on port 3000");
+  
+});
+
+
+
+
+
+
+
+
+
