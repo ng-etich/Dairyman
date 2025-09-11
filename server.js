@@ -14,6 +14,7 @@ const salt = bcrypt.genSaltSync(13);
 const session = require("express-session")
 const sqlQuery = require("./sqlstatement.js");
 const utils = require("./utils.js");
+const { log } = require('console');
 
 dbconn.query(
   "SELECT * FROM Farmers where email = ?",
@@ -34,7 +35,7 @@ app.use(
   })
 );
 //authorization middleware
-const protectedRoutes = ["/dashboard","/expenses"]
+const protectedRoutes = ["/dashboard","/expenses","/animal-profiles", "/new-animal","/milk-production"];
 app.use((req,res,next)=>{
   if(protectedRoutes.includes(req.path)){
     //check if user is logged in
@@ -165,6 +166,73 @@ app.get("/dashboard", (req, res) =>{
   
   
 });
+
+app.get("/animal-profiles", (req, res) => {
+  dbconn.query(
+    sqlQuery.getAnimalsProductionsForFarmer(req.session.farmer.farmer_id),
+    (sqlErr, animals) => {
+      if (sqlErr) return res.status(500).send("Server Error!" + sqlErr);
+      console.log(utils.getChartData(animals));
+
+      dbconn.query(
+        `select * from Animal WHERE owner_id=${req.session.farmer.farmer_id}`,
+        (err, allAnimalsForFarmer) => {
+          if (err) return res.status(500).send("Server Error!" + err);
+          res.render("animal-profiles.ejs", {
+            animals: utils.getChartData(animals),
+            allAnimalsForFarmer,
+          });
+        }
+      );
+    }
+  );
+});
+
+app.post("/new-animal", (req, res) => {
+  let { animal_tag, dob, purchase_date, breed, name, source, gender, status } =
+    req.body;
+  purchase_date.length == 0
+    ? (purchase_date = "2000-01-01")
+    : (purchase_date = purchase_date);
+  console.log(req.body);
+
+  const insertAnimalStatement = `INSERT INTO Animal(animal_tag,name,dob,purchase_date,breed,status,source,gender,owner_id) VALUES("${animal_tag}","${name}","${dob}","${purchase_date}","${breed}","${status}","${source}","${gender}", ${req.session.farmer.farmer_id})`;
+
+  dbconn.query(insertAnimalStatement, (sqlErr) => {
+    if (sqlErr) {
+      console.log(sqlErr);
+      return res.status(500).send("Server Error!" + sqlErr);
+    }
+    res.redirect("/animal-profiles");
+  });
+});
+
+app.get("/milk-production", (req, res) => {
+  const productionQuery = `
+    SELECT
+      Animal.animal_tag,
+      Animal.name AS animal_name,
+      MilkProduction.production_date,
+      MilkProduction.production_time,
+      quantity
+    FROM MilkProduction
+    JOIN Animal ON MilkProduction.animal_id = Animal.animal_tag
+    JOIN Farmers ON Animal.owner_id = Farmers.farmer_id
+    WHERE Farmers.farmer_id = ${req.session.farmer.farmer_id}
+    ORDER BY MilkProduction.production_date DESC
+    LIMIT 30;
+  `;
+
+  dbconn.query(productionQuery, (err, results) => {
+    if (err) {
+      console.error(err);
+      return res.status(500).send("Server Error!" + err);
+    }
+    res.render("milk-production.ejs", {productions: results });
+  });
+});
+
+
 
 app.get("/logout",(req,res) =>{
   req.session.destroy();
