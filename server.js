@@ -1,5 +1,7 @@
 const express = require('express');
 const path = require('path');
+const multer = require("multer");
+const upload = multer({ dest: "public/images/" });
 
 const app = express();
 const mysql = require("mysql");
@@ -35,7 +37,7 @@ app.use(
   })
 );
 //authorization middleware
-const protectedRoutes = ["/dashboard","/expenses","/animal-profiles", "/new-animal","/milk-production"];
+const protectedRoutes = ["/dashboard","/expenses","/animal-profiles", "/new-animal","/milk-production","/add-milk-production","/add-expense","/vaccination"];
 app.use((req,res,next)=>{
   if(protectedRoutes.includes(req.path)){
     //check if user is logged in
@@ -188,7 +190,7 @@ app.get("/animal-profiles", (req, res) => {
   );
 });
 
-app.post("/new-animal", (req, res) => {
+app.post("/new-animal",upload.single("picture") ,(req, res) => {
   let { animal_tag, dob, purchase_date, breed, name, source, gender, status } =
     req.body;
   purchase_date.length == 0
@@ -232,7 +234,226 @@ app.get("/milk-production", (req, res) => {
   });
 });
 
+app.post("/milk-production", (req, res) => {
+  const { animal_id, production_date, production_time, quantity } = req.body;
+  console.log(req.body);
 
+  const insertProductionStatement = `
+    INSERT INTO MilkProduction(animal_id, production_date, production_time, quantity)
+    VALUES(?, ?, ?, ?)
+  `;
+
+  dbconn.query(
+    insertProductionStatement,
+    [animal_id, production_date, production_time, quantity],
+    (sqlErr) => {
+      if (sqlErr) {
+        console.log(sqlErr);
+        return res.status(500).send("Server Error!" + sqlErr);
+      }
+      res.redirect("/milk-production");
+    }
+  );
+});   
+
+app.get("/add-milk-production", (req, res) => {
+  dbconn.query(
+    `SELECT animal_tag,name FROM Animal WHERE owner_id=${req.session.farmer.farmer_id} AND status = "Alive" AND gender = "Female"`,
+    (sqlErr, animals) => {
+      console.log(sqlErr);
+      
+      res.render("add-milk-production.ejs", { animals });
+    }
+  );
+});
+
+app.post("/add-milk-production", (req, res) => {
+  quality = quality || High;
+  const { animal_id, production_date, production_time, quantity, quality } = req.body;
+  console.log(req.body);
+
+  const insertProductionStatement = `
+    INSERT INTO MilkProduction(animal_id, production_date, production_time, quantity, quality)
+    VALUES(?, ?, ?, ?)
+  `;
+
+  dbconn.query(
+    insertProductionStatement,
+    [animal_id, production_date, production_time, quantity],
+    (sqlErr) => {
+      if (sqlErr) {
+        console.log(sqlErr);
+        return res.status(500).send("Server Error!" + sqlErr);
+      }
+      res.redirect("/milk-production");
+    }
+  );
+});
+
+app.get("/expenses", (req, res) => {
+  const farmerId = req.session.farmer.farmer_id;
+
+  const totalExpensesQuery = `
+    SELECT IFNULL(SUM(amount), 0) AS total
+    FROM Expenses
+    WHERE farmer_id = ?
+  `;
+
+  const avgDailyQuery = `
+    SELECT IFNULL(SUM(amount)/30, 0) AS avgDaily
+    FROM Expenses
+    WHERE farmer_id = ?
+      AND expense_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+  `;
+
+  const recentQuery = `
+    SELECT expense_date, expense_type, description, amount
+    FROM Expenses
+    WHERE farmer_id = ?
+    ORDER BY expense_date DESC
+    LIMIT 5
+  `;
+
+  dbconn.query(totalExpensesQuery, [farmerId], (err, totalRes) => {
+    if (err) return res.status(500).send("Error fetching total expenses");
+
+    dbconn.query(avgDailyQuery, [farmerId], (err, avgRes) => {
+      if (err) return res.status(500).send("Error fetching avg daily expenses");
+
+      dbconn.query(recentQuery, [farmerId], (err, recentRes) => {
+        if (err) return res.status(500).send("Error fetching recent expenses");
+
+        res.render("expenses.ejs", {
+          totalExpenses: totalRes[0].total,
+          avgDailyExpenses: avgRes[0].avgDaily,
+          recentExpenses: recentRes,
+        });
+      });
+    });
+  });
+});
+
+app.post("/add-expense", (req, res) => {
+  const { expense_date, expense_type, description, amount } = req.body;
+
+  if (!req.session.farmer) {
+    return res.redirect("/login?message=unauthorized");
+  }
+
+  const farmer_id = req.session.farmer.farmer_id;
+
+  const insertExpenseStatement = `
+    INSERT INTO Expenses(expense_date, expense_type, description, amount, farmer_id)
+    VALUES(?, ?, ?, ?, ?)
+  `;
+
+  dbconn.query(
+    insertExpenseStatement,
+    [expense_date, expense_type, description, amount, farmer_id],
+    (err) => {
+      if (err) {
+        console.error("Insert expense error:", err);
+        return res.status(500).send("Server Error!" + err);
+      }
+      req.session.successMessage = "Expense recorded successfully!";
+      res.redirect("/expenses");
+    }
+  );
+});
+
+
+app.get("/vaccination", (req, res) => {
+  const farmerId = req.session.farmer.farmer_id;
+
+  const totalQuery = `
+    SELECT COUNT(*) AS totalVaccinations
+    FROM Vaccination v
+    JOIN Animal a ON v.animal_id = a.animal_tag
+    WHERE a.owner_id = ?
+  `;
+
+  const dueSoonQuery = `
+    SELECT COUNT(*) AS dueSoon
+    FROM Vaccination v
+    JOIN Animal a ON v.animal_id = a.animal_tag
+    WHERE a.owner_id = ?
+      AND v.next_due_date IS NOT NULL
+      AND v.next_due_date BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 30 DAY)
+  `;
+
+  const recentQuery = `
+    SELECT v.date_administered, v.vaccine_name, v.next_due_date, v.notes,
+           a.name AS animal_name, a.animal_tag
+    FROM Vaccination v
+    JOIN Animal a ON v.animal_id = a.animal_tag
+    WHERE a.owner_id = ?
+    ORDER BY v.date_administered DESC
+    LIMIT 5
+  `;
+
+  dbconn.query(totalQuery, [farmerId], (err, totalRes) => {
+    if (err) {
+      console.error("Total vaccinations query error:", err);
+      return res.status(500).send("Error fetching total vaccinations");
+    }
+
+    dbconn.query(dueSoonQuery, [farmerId], (err, dueRes) => {
+      if (err) {
+        console.error("Due soon query error:", err);
+        return res.status(500).send("Error fetching due soon vaccinations");
+      }
+
+      dbconn.query(recentQuery, [farmerId], (err, recentRes) => {
+        if (err) {
+          console.error("Recent vaccinations query error:", err);
+          return res.status(500).send("Error fetching recent vaccinations");
+        }
+
+        dbconn.query(
+          `SELECT animal_tag, name FROM Animal WHERE owner_id = ? AND status="Alive"`,
+          [farmerId],
+          (err, animals) => {
+            if (err) {
+              console.error("Animals query error:", err);
+              return res.status(500).send("Error fetching animals");
+            }
+
+            res.render("vaccination.ejs", {
+              totalVaccinations: totalRes[0].totalVaccinations,
+              dueSoon: dueRes[0].dueSoon,
+              recentVaccinations: recentRes,
+              animals
+            });
+          }
+        );
+      });
+    });
+  });
+});
+
+   
+
+app.post("/add-vaccination", (req, res) => {
+  const { animal_id, date_administered, vaccine_name, next_due_date, notes } = req.body;
+  console.log(req.body);
+
+  const insertVaccinationStatement = `
+    INSERT INTO Vaccination(animal_id, date_administered, vaccine_name, next_due_date, notes)
+    VALUES(?, ?, ?, ?, ?)
+  `;
+
+  dbconn.query(
+    insertVaccinationStatement,
+    [animal_id, date_administered, vaccine_name, next_due_date, notes],
+    (sqlErr) => {
+      if (sqlErr) {
+        console.error("Insert vaccination error:", sqlErr);
+        return res.status(500).send("Server Error!" + sqlErr);
+      }
+      res.redirect("/vaccination");
+    }
+  );
+});
 
 app.get("/logout",(req,res) =>{
   req.session.destroy();
