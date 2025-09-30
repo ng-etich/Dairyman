@@ -37,7 +37,7 @@ app.use(
   })
 );
 //authorization middleware
-const protectedRoutes = ["/dashboard","/expenses","/animal-profiles", "/new-animal","/milk-production","/add-milk-production","/add-expense","/vaccination"];
+const protectedRoutes = ["/dashboard","/expenses","/animal-profiles", "/new-animal","/milk-production","/add-milk-production","/add-expense","/vaccination","/add-vaccination","/medication","/add-medication","/feed-consumption","/add-feed-consumption"];  
 app.use((req,res,next)=>{
   if(protectedRoutes.includes(req.path)){
     //check if user is logged in
@@ -454,6 +454,211 @@ app.post("/add-vaccination", (req, res) => {
     }
   );
 });
+
+// Show medication records
+// Show medication records
+app.get("/medication", (req, res) => {
+  const farmerId = req.session.farmer.farmer_id;
+
+  const sql = `
+    SELECT m.medication_id, m.medication_name, m.dose, m.start_date, m.end_date,
+           m.veterinary_name, m.veterinary_remarks, m.notes,
+           a.animal_tag, a.name AS animal_name
+    FROM Medication m
+    JOIN Animal a ON m.animal_id = a.animal_tag
+    WHERE a.owner_id = ?
+    ORDER BY m.start_date DESC
+  `;
+
+  dbconn.query(sql, [farmerId], (err, medications) => {
+    if (err) {
+      console.error(err);
+      return res.status(500).send("Server Error! " + err);
+    }
+
+    // Compute values for dashboard cards
+    const totalMedications = medications.length;
+
+    const activeMedications = medications.filter(med => {
+      if (!med.end_date) return true; // ongoing treatment
+      return new Date(med.end_date) >= new Date(); // still active
+    }).length;
+
+    const recentMedications = medications.slice(0, 5); // last 5 records
+
+    res.render("medication.ejs", {
+      medications,
+      totalMedications,
+      activeMedications,
+      recentMedications,
+      animals: [] // just in case your EJS form expects it
+    });
+  });
+});
+
+
+
+// Add a new medication record
+app.post("/add-medication", (req, res) => {
+  let { animal_id, medication_name, dose, start_date, end_date, veterinary_name, veterinary_remarks, notes } = req.body;
+
+  // defaults
+  end_date = end_date || null;
+  notes = notes || "No notes provided";
+
+  const sql = `
+    INSERT INTO Medication(animal_id, medication_name, dose, start_date, end_date, veterinary_name, veterinary_remarks, notes)
+    VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+  `;
+
+  dbconn.query(
+    sql,
+    [animal_id, medication_name, dose, start_date, end_date, veterinary_name, veterinary_remarks, notes],
+    (err) => {
+      if (err) {
+        console.error(err);
+        return res.status(500).send("Server Error! " + err);
+      }
+      res.redirect("/medication");
+    }
+  );
+});
+
+
+
+/// ============================
+// Feed Consumption Management
+// ============================
+
+app.get("/feed-consumption", (req, res) => {
+  const farmerId = req.session.farmer.farmer_id;
+
+  // Queries
+  const totalFeedRecordsQuery = `
+    SELECT COUNT(*) as total_feed_records
+    FROM FeedConsumption fc
+    JOIN Animal a ON fc.animalfed = a.animal_tag
+    WHERE a.owner_id = ?
+  `;
+
+  const totalFeedCostQuery = `
+    SELECT IFNULL(SUM(fc.cost), 0) as total_feed_cost
+    FROM FeedConsumption fc
+    JOIN Animal a ON fc.animalfed = a.animal_tag
+    WHERE a.owner_id = ? 
+      AND fc.date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+  `;
+
+  const totalQuantityQuery = `
+    SELECT IFNULL(SUM(fc.quantity), 0) as total_quantity
+    FROM FeedConsumption fc
+    JOIN Animal a ON fc.animalfed = a.animal_tag
+    WHERE a.owner_id = ?
+  `;
+
+  const avgDailyCostQuery = `
+    SELECT ROUND(IFNULL(SUM(fc.cost) / 30, 0), 0) as avg_daily_cost
+    FROM FeedConsumption fc
+    JOIN Animal a ON fc.animalfed = a.animal_tag
+    WHERE a.owner_id = ? 
+      AND fc.date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+  `;
+
+  const recentFeedQuery = `
+    SELECT fc.id_feed, fc.animalfed, fc.quantity, fc.type, fc.cost, fc.date,
+           a.name as animal_name, a.animal_tag
+    FROM FeedConsumption fc
+    JOIN Animal a ON fc.animalfed = a.animal_tag
+    WHERE a.owner_id = ?
+    ORDER BY fc.date DESC
+    LIMIT 5
+  `;
+
+  const animalsQuery = `
+    SELECT animal_tag, name
+    FROM Animal
+    WHERE owner_id = ? AND status = 'Alive'
+  `;
+
+  // Run queries in parallel
+  Promise.all([
+    new Promise((resolve, reject) =>
+      dbconn.query(totalFeedRecordsQuery, [farmerId], (err, result) => {
+        if (err) reject(err);
+        else resolve(result[0].total_feed_records);
+      })
+    ),
+    new Promise((resolve, reject) =>
+      dbconn.query(totalFeedCostQuery, [farmerId], (err, result) => {
+        if (err) reject(err);
+        else resolve(result[0].total_feed_cost);
+      })
+    ),
+    new Promise((resolve, reject) =>
+      dbconn.query(totalQuantityQuery, [farmerId], (err, result) => {
+        if (err) reject(err);
+        else resolve(result[0].total_quantity);
+      })
+    ),
+    new Promise((resolve, reject) =>
+      dbconn.query(avgDailyCostQuery, [farmerId], (err, result) => {
+        if (err) reject(err);
+        else resolve(result[0].avg_daily_cost);
+      })
+    ),
+    new Promise((resolve, reject) =>
+      dbconn.query(recentFeedQuery, [farmerId], (err, result) => {
+        if (err) reject(err);
+        else resolve(result);
+      })
+    ),
+    new Promise((resolve, reject) =>
+      dbconn.query(animalsQuery, [farmerId], (err, result) => {
+        if (err) reject(err);
+        else resolve(result);
+      })
+    )
+  ])
+    .then(([totalFeedRecords, totalFeedCost, totalQuantity, avgDailyCost, recentFeed, animals]) => {
+      res.render("feed-consumption.ejs", {
+        totalFeedRecords,
+        totalFeedCost,
+        totalQuantity,
+        avgDailyCost, // ✅ Pass this to EJS
+        recentFeedConsumption: recentFeed,
+        animals,
+        successMessage: req.session.successMessage || null,
+      });
+      req.session.successMessage = null; // clear after showing
+    })
+    .catch((err) => {
+      console.error("Error fetching feed consumption data:", err);
+      res.status(500).send("Server Error: " + err.message);
+    });
+});
+
+
+// Add Feed Record
+app.post("/add-feed-consumption", (req, res) => {
+  const { animalfed, quantity, type, cost } = req.body;
+
+  const insertFeedQuery = `
+    INSERT INTO FeedConsumption (animalfed, quantity, type, cost)
+    VALUES (?, ?, ?, ?)
+  `;
+
+  dbconn.query(insertFeedQuery, [animalfed, quantity, type, cost], (err) => {
+    if (err) {
+      console.error("Error inserting feed record:", err);
+      return res.status(500).send("Server Error: " + err.message);
+    }
+
+    req.session.successMessage = "✅ Feed consumption recorded successfully!";
+    res.redirect("/feed-consumption");
+  });
+});
+
+
 
 app.get("/logout",(req,res) =>{
   req.session.destroy();
